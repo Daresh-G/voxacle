@@ -10,6 +10,25 @@ const fs = require("fs");
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const LOG = path.join(PROJECT_ROOT, "backend", "api.log");
 
+/**
+ * Resolve the Python interpreter that actually has the ML stack
+ * (torch / speechbrain / fastapi / uvicorn) installed. The system
+ * /usr/bin/python3 is bare, so prefer known virtualenvs explicitly.
+ */
+function resolvePython() {
+  const candidates = [
+    process.env.VOXACLE_PYTHON, // explicit override
+    "/home/z/.venv/bin/python3", // sandbox virtualenv (full deps)
+    path.join(PROJECT_ROOT, ".venv", "bin", "python3"), // project-local venv
+    "python3", // PATH fallback
+  ];
+  for (const cand of candidates) {
+    if (!cand) continue;
+    if (cand === "python3" || fs.existsSync(cand)) return cand;
+  }
+  return "python3";
+}
+
 async function isUp() {
   try {
     const ctrl = new AbortController();
@@ -34,7 +53,7 @@ async function ensureBackend() {
     fs.mkdirSync(path.join(PROJECT_ROOT, "backend"), { recursive: true });
     fs.appendFileSync(LOG, `\n[instrumentation] spawning backend at ${new Date().toISOString()}\n`);
     const child = spawn(
-      "python3",
+      resolvePython(),
       ["-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "3030"],
       {
         cwd: PROJECT_ROOT,
