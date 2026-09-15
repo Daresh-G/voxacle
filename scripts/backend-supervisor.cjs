@@ -3,7 +3,7 @@
  * Spawned via a turbopackIgnore'd dynamic import so the Edge bundler
  * never traces Node.js APIs.
  */
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
@@ -29,6 +29,33 @@ function resolvePython() {
   return "python3";
 }
 
+const ML_CORE = ["torch", "torchaudio"];
+const ML_EXTRAS = ["speechbrain", "onnxruntime"];
+
+function pipMissing(python, mods) {
+  const code = spawnSync(python, ["-c", mods.map((m) => `import ${m}`).join("; ")], {
+    encoding: "utf8",
+    timeout: 30000,
+  });
+  return code.status !== 0;
+}
+
+/**
+ * Self-heal after sandbox resets: the venv keeps its light deps but the
+ * heavy ML wheels get wiped. Reinstall only when actually missing.
+ */
+function ensureMlDeps(python) {
+  if (!pipMissing(python, ML_CORE) && !pipMissing(python, ML_EXTRAS)) return;
+  console.log("[VOXACLE] ML packages missing — reinstalling (first boot only)...");
+  try {
+    fs.appendFileSync(LOG, `[supervisor] reinstalling ML stack for ${python} at ${new Date().toISOString()}\n`);
+    spawnSync(python, ["-m", "pip", "install", "--quiet", ...ML_CORE, "--index-url", "https://download.pytorch.org/whl/cpu"], { stdio: "inherit", timeout: 900000 });
+    spawnSync(python, ["-m", "pip", "install", "--quiet", ...ML_EXTRAS], { stdio: "inherit", timeout: 300000 });
+  } catch (e) {
+    console.error("[VOXACLE] ML reinstall failed:", e.message);
+  }
+}
+
 async function isUp() {
   try {
     const ctrl = new AbortController();
@@ -51,9 +78,11 @@ async function ensureBackend() {
   }
   try {
     fs.mkdirSync(path.join(PROJECT_ROOT, "backend"), { recursive: true });
+    const py = resolvePython();
+    ensureMlDeps(py);
     fs.appendFileSync(LOG, `\n[instrumentation] spawning backend at ${new Date().toISOString()}\n`);
     const child = spawn(
-      resolvePython(),
+      py,
       ["-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "3030"],
       {
         cwd: PROJECT_ROOT,
